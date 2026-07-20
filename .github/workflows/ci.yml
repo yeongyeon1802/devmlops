@@ -1,0 +1,17 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - ch02-1-ci
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  welcome-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo Welcome Message
+        run: echo "GitHub Actions CI Pipeline Start"
