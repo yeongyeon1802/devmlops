@@ -1,0 +1,28 @@
+name: docker-build
+
+on:
+  push:
+    branches:
+      - main
+      - "ch02-2-*"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+
+      - name: Set image tag
+        id: image
+        run: echo "tag=devmlops-fastapi:${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        working-directory: ch02-2
+        run: docker build -t "${{ steps.image.outputs.tag }}" .
+
+      - name: Inspect Docker image
+        run: docker image inspect "${{ steps.image.outputs.tag }}"
