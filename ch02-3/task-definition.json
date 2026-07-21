@@ -4,7 +4,7 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "256",
   "memory": "512",
-  "executionRoleArn": "<ECS_TASK_EXECUTION_ROLE_ARN>",
+  "executionRoleArn": "arn:aws:iam::729015561002:role/ecsTaskExecutionRole",
   "containerDefinitions": [
     {
       "name": "devmlops-fastapi",
@@ -30,7 +30,7 @@
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/devmlops-fastapi",
-          "awslogs-region": "<AWS_REGION>",
+          "awslogs-region": "ap-northeast-2",
           "awslogs-stream-prefix": "ecs"
         }
       }
