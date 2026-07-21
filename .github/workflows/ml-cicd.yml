@@ -16,7 +16,7 @@ permissions:
 
 env:
   # 모델 검증 임계값. 이 값을 1.0으로 올리면 배포 차단 상황을 재현할 수 있다.
-  MODEL_ACCURACY_THRESHOLD: "1.0"
+  MODEL_ACCURACY_THRESHOLD: "0.9"
 
 jobs:
   # 1단계: 코드 테스트와 모델 성능 검증을 함께 실행한다.
