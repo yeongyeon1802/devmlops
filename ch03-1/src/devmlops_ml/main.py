@@ -1,9 +1,13 @@
 """학습된 iris 모델을 API로 제공하는 FastAPI 서빙 애플리케이션.
 
-ch02-2의 FastAPI 구조에 모델 로딩과 /predict 엔드포인트를 더한 구조이다.
-모델 파일(model/model.joblib)은 train.py 실행 또는 Docker 빌드 과정에서 만들어진다.
+ch03-1의 main.py에 추론 로깅(Inference Logging)을 추가한 버전이다. 이 파일로
+ch03-1/code/src/devmlops_ml/main.py를 교체한다. 엔드포인트 동작과 응답 형식은
+ch03-1과 동일하며, `/predict` 요청마다 입력값과 예측 결과를 로그로 남기는
+부분만 추가됐다. 이 로그는 ECS 태스크 정의의 awslogs 드라이버를 통해
+CloudWatch Logs(`/ecs/devmlops-fastapi`)에 그대로 쌓인다.
 """
 
+import logging
 import os
 from pathlib import Path
 
@@ -18,6 +22,12 @@ MODEL_PATH = Path(os.environ.get("MODEL_DIR", "model")) / "model.joblib"
 
 # iris 품종 번호(0, 1, 2)를 사람이 읽을 수 있는 이름으로 바꾸기 위한 목록이다.
 CLASS_NAMES = ["setosa", "versicolor", "virginica"]
+
+# uvicorn이 표준 출력으로 보내는 로그는 awslogs 드라이버가 그대로 수집하므로,
+# 별도 로그 저장소 설정 없이 logging 모듈만 사용한다.
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("devmlops_ml.inference")
+logger.setLevel(logging.INFO)
 
 app = FastAPI(
     title="DevMLOps Iris Serving",
@@ -59,7 +69,7 @@ def read_health() -> dict[str, str]:
 
 @app.post("/predict")
 def predict(features: IrisFeatures) -> dict[str, object]:
-    """입력 특성 4개로 iris 품종을 예측한다."""
+    """입력 특성 4개로 iris 품종을 예측하고, 입력과 결과를 로그로 남긴다."""
     if model is None:
         # 모델 파일 없이 컨테이너가 뜬 경우. 빌드 단계의 학습 누락이 원인이다.
         raise HTTPException(status_code=503, detail="Model is not loaded.")
@@ -72,9 +82,19 @@ def predict(features: IrisFeatures) -> dict[str, object]:
     ]]
     class_index = int(model.predict(row)[0])
     probability = float(model.predict_proba(row)[0][class_index])
+    prediction = CLASS_NAMES[class_index]
+
+    # 추론 로깅: 데이터 드리프트나 이상 예측을 의심할 때 이 시점의
+    # 실제 입력 분포와 예측 결과를 다시 확인할 수 있도록 남긴다.
+    logger.info(
+        "predict request=%s prediction=%s probability=%.4f",
+        features.model_dump(),
+        prediction,
+        probability,
+    )
 
     return {
-        "prediction": CLASS_NAMES[class_index],
+        "prediction": prediction,
         "probability": round(probability, 4),
         "model_version": __version__,
     }
