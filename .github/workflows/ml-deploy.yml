@@ -1,0 +1,101 @@
+﻿name: ml-deploy
+
+# champion 별칭 조회는 로컬 MLflow DB(ch03-1/mlflow.db) 기준으로만 가능하다.
+# GitHub Actions runner는 매 실행마다 새로 생성되어 이 로컬 상태를 갖고 있지
+# 않으므로, runner 안에서 Model Registry를 직접 조회하지 않는다. 대신
+# `ch03-3/resolve_champion.py`를 로컬에서 먼저 실행해 champion 버전과
+# run_id를 확인한 뒤, 그 값을 아래 입력값으로 채워 배포를 실행한다.
+on:
+  workflow_dispatch:
+    inputs:
+      champion_version:
+        description: "로컬에서 resolve_champion.py로 확인한 champion 모델 버전"
+        required: true
+      champion_run_id:
+        description: "로컬에서 resolve_champion.py로 확인한 champion run_id"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # champion_version/champion_run_id가 비어 있으면 배포를 진행하지 않는다.
+  # 별칭이 없는 상태에서는 로컬에서 이 값을 조회할 수 없으므로(resolve_champion.py
+  # 실패), 이 job은 "로컬 확인을 거쳤는지"를 최소한으로 검증하는 역할을 한다.
+  confirm-champion:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require champion inputs
+        run: |
+          if [ -z "${{ inputs.champion_version }}" ] || [ -z "${{ inputs.champion_run_id }}" ]; then
+            echo "champion_version과 champion_run_id를 입력해야 배포를 진행할 수 있습니다." >&2
+            exit 1
+          fi
+          echo "champion version=${{ inputs.champion_version }} run_id=${{ inputs.champion_run_id }}"
+
+  # ch02-3의 배포 job과 동일한 방식으로 최신 이미지를 ECS에 반영한다.
+  # 태스크 정의 템플릿과 서비스는 ch02-3에서 만든 것을 그대로 재사용한다.
+  #
+  # 한계: 아래에서 선택하는 이미지는 ECR에 가장 최근 Push된 이미지이며,
+  # champion_version이 가리키는 학습 실행에서 만들어진 이미지와 같다는
+  # 보장은 없다. ch03-1의 이미지 빌드(커밋마다 재학습)와 ch03-2의 MLflow 실행은
+  # 서로 다른 경로로 모델을 만들기 때문이다. 이 실습은 "champion 별칭이
+  # 지정된 상태인지"를 배포 조건으로 확인하는 데 범위를 한정하고, 이미지와
+  # 모델 버전을 완전히 일치시키는 구성은 다루지 않는다.
+  deploy:
+    needs: confirm-champion
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # ch02-3의 ecr-push.yml과 ch03-1의 ml-cicd.yml은 같은 ECR_REPOSITORY에
+      # 서로 다른 애플리케이션(ch02-2 기본 API, ML 서빙 API)을 계속 Push한다.
+      # "가장 최근 Push된 이미지"를 태그 구분 없이 고르면 ML이 아닌 이미지가
+      # 선택될 수 있으므로, ml-cicd.yml이 사용하는 `ml-` 태그 접두사로 한정해
+      # 조회한다.
+      - name: Resolve latest ML image tag
+        id: image
+        env:
+          REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+        run: |
+          IMAGE_TAG=$(aws ecr describe-images \
+            --repository-name "$REPOSITORY" \
+            --query "sort_by(imageDetails[?starts_with(imageTags[0], 'ml-')],& imagePushedAt)[-1].imageTags[0]" \
+            --output text)
+          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" = "None" ]; then
+            echo "ml- 태그가 붙은 이미지를 찾을 수 없습니다. ch03-1 ml-cicd Workflow가 먼저 실행되어야 합니다." >&2
+            exit 1
+          fi
+          REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+          echo "image=$REGISTRY/$REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Render new task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ch02-3/task-definition.json
+          container-name: devmlops-fastapi
+          image: ${{ steps.image.outputs.image }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: ${{ secrets.ECS_SERVICE }}
+          cluster: ${{ secrets.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      # 이번 배포가 어떤 모델 버전을 기준으로 승인됐는지 로그에 남긴다.
+      - name: Record deployed model version
+        run: echo "champion version ${{ inputs.champion_version }} (run_id=${{ inputs.champion_run_id }}) approved, image ${{ steps.image.outputs.image }} deployed"
+
